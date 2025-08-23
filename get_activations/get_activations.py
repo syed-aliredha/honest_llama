@@ -1,3 +1,4 @@
+# get_activations/get_activations.py
 # Pyvene method of getting activations
 import os
 import torch
@@ -27,7 +28,7 @@ HF_NAMES = {
     'llama2_chat_70B': 'meta-llama/Llama-2-70b-chat-hf', 
     'llama3_8B': 'meta-llama/Meta-Llama-3-8B',
     'llama3_8B_instruct': 'meta-llama/Meta-Llama-3-8B-Instruct',
-    'llama3.1_8B_instruct': 'meta-llama/Meta-Llama-3.1-8B-Instruct', 
+    'llama3.1_8B_instruct': 'meta-llama/Meta-Llama-3.1-8B-Instruct',  # YOUR ADDITION
     'llama3_70B': 'meta-llama/Meta-Llama-3-70B',
     'llama3_70B_instruct': 'meta-llama/Meta-Llama-3-70B-Instruct'
 }
@@ -48,10 +49,22 @@ def main():
 
     model_name_or_path = HF_NAMES[args.model_prefix + args.model_name]
 
+    print(f"Loading model: {model_name_or_path}")
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    model = AutoModelForCausalLM.from_pretrained(model_name_or_path, low_cpu_mem_usage=True, torch_dtype=torch.float16, device_map="auto")
+    
+    # Add padding token if not present (important for LLaMA 3.1)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name_or_path, 
+        low_cpu_mem_usage=True, 
+        torch_dtype=torch.float16, 
+        device_map="auto"
+    )
     device = "cuda"
 
+    # Rest of the function remains the same...
     if args.dataset_name == "tqa_mc2": 
         dataset = load_dataset("truthfulqa/truthful_qa", "multiple_choice")['validation']
         formatter = tokenized_tqa
@@ -72,10 +85,11 @@ def main():
     else: 
         prompts, labels = formatter(dataset, tokenizer)
 
+    # Set up collectors for each layer
     collectors = []
     pv_config = []
     for layer in range(model.config.num_hidden_layers): 
-        collector = Collector(multiplier=0, head=-1) #head=-1 to collect all head activations, multiplier doens't matter
+        collector = Collector(multiplier=0, head=-1) # head=-1 to collect all head activations
         collectors.append(collector)
         pv_config.append({
             "component": f"model.layers[{layer}].self_attn.o_proj.input",
@@ -86,9 +100,11 @@ def main():
     all_layer_wise_activations = []
     all_head_wise_activations = []
 
-    print("Getting activations")
+    print(f"Getting activations for {len(prompts)} prompts")
     for prompt in tqdm(prompts):
-        layer_wise_activations, head_wise_activations, _ = get_llama_activations_pyvene(collected_model, collectors, prompt, device)
+        layer_wise_activations, head_wise_activations, _ = get_llama_activations_pyvene(
+            collected_model, collectors, prompt, device
+        )
         all_layer_wise_activations.append(layer_wise_activations[:,-1,:].copy())
         all_head_wise_activations.append(head_wise_activations.copy())
 
@@ -100,6 +116,8 @@ def main():
     
     print("Saving head wise activations")
     np.save(f'../features/{args.model_name}_{args.dataset_name}_head_wise.npy', all_head_wise_activations)
+    
+    print(f"✓ Activations saved for {args.model_name} on {args.dataset_name}")
 
 if __name__ == '__main__':
     main()
