@@ -78,7 +78,14 @@ def format_truthfulqa_end_q(question, choice, rand_question):
 
 
 def tokenized_tqa(dataset, tokenizer): 
-
+    """
+    Formats TruthfulQA dataset for multiple choice task
+    """
+    # Check if using LLaMA 3.1 and apply special formatting if needed
+    if tokenizer.name_or_path and "Llama-3.1" in tokenizer.name_or_path:
+        # LLaMA 3.1 uses special tokens
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
     all_prompts = []
     all_labels = []
     for i in range(len(dataset)):
