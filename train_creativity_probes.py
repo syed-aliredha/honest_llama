@@ -1,7 +1,7 @@
 # train_creativity_probes.py
 """
 Train probes to identify creativity-related attention heads.
-Uses real head-wise activations extracted via baukit's TraceDict.
+Uses head-wise activations extracted from LLaMA model.
 """
 
 import torch
@@ -13,6 +13,8 @@ from sklearn.metrics import accuracy_score, roc_auc_score, classification_report
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from einops import rearrange
+import warnings
+warnings.filterwarnings('ignore')
 
 
 def load_activations(split='train', data_dir='features/creativity_llama31_fixed'):
@@ -23,6 +25,7 @@ def load_activations(split='train', data_dir='features/creativity_llama31_fixed'
     # Try loading pickle format first (contains metadata)
     pkl_path = data_path / f'{split}_activations.pkl'
     if pkl_path.exists():
+        print(f"Loading {split} activations from {pkl_path}")
         with open(pkl_path, 'rb') as f:
             data = pickle.load(f)
         return (data['layer_wise'], 
@@ -32,6 +35,7 @@ def load_activations(split='train', data_dir='features/creativity_llama31_fixed'
                 data.get('num_heads', 32))
     
     # Fallback to numpy format
+    print(f"Loading {split} activations from numpy files")
     layer_wise = np.load(data_path / f'{split}_layer_wise.npy')
     head_wise = np.load(data_path / f'{split}_head_wise.npy')
     labels = np.load(data_path / f'{split}_labels.npy')
@@ -90,7 +94,8 @@ def train_layer_probes(train_acts, train_labels, val_acts, val_labels):
         probe = LogisticRegression(
             max_iter=1000, 
             class_weight='balanced',
-            random_state=42
+            random_state=42,
+            solver='liblinear'  # More stable for smaller datasets
         )
         probe.fit(X_train, train_labels)
         
@@ -116,79 +121,95 @@ def train_head_probes(head_wise_acts_train, train_labels,
     
     Returns:
         all_head_scores: List of dicts with head info and scores
-        probes: List of trained probes
+        head_probes: List of trained probes
     """
     
-    # Reshape to separate heads
-    train_reshaped = reshape_head_wise_activations(head_wise_acts_train, num_layers, num_heads)
-    val_reshaped = reshape_head_wise_activations(head_wise_acts_val, num_layers, num_heads)
+    print("\nReshaping head-wise activations...")
+    # Reshape to separate individual heads
+    train_acts_reshaped = reshape_head_wise_activations(
+        head_wise_acts_train, num_layers, num_heads
+    )
+    val_acts_reshaped = reshape_head_wise_activations(
+        head_wise_acts_val, num_layers, num_heads
+    )
+    
+    print(f"Reshaped train shape: {train_acts_reshaped.shape}")
+    print(f"Reshaped val shape: {val_acts_reshaped.shape}")
     
     all_head_scores = []
-    probes = []
+    head_probes = []
     
-    print(f"\nTraining probes for {num_layers} layers × {num_heads} heads...")
-    
+    print("\nTraining head-wise probes...")
     for layer_idx in tqdm(range(num_layers), desc="Layers"):
         for head_idx in range(num_heads):
             # Get activations for this specific head
-            X_train = train_reshaped[:, layer_idx, head_idx, :]
-            X_val = val_reshaped[:, layer_idx, head_idx, :]
+            X_train = train_acts_reshaped[:, layer_idx, head_idx, :]
+            X_val = val_acts_reshaped[:, layer_idx, head_idx, :]
             
             # Train probe
             probe = LogisticRegression(
-                max_iter=500,
+                max_iter=1000,
                 class_weight='balanced',
-                random_state=42
+                random_state=42,
+                solver='liblinear'
             )
             
             try:
                 probe.fit(X_train, train_labels)
                 
-                # Get validation metrics
+                # Get predictions and probabilities
+                train_pred = probe.predict(X_train)
                 val_pred = probe.predict(X_val)
+                
+                # Get probabilities for AUC
+                train_proba = probe.predict_proba(X_train)[:, 1]
+                val_proba = probe.predict_proba(X_val)[:, 1]
+                
+                # Calculate metrics
+                train_acc = accuracy_score(train_labels, train_pred)
                 val_acc = accuracy_score(val_labels, val_pred)
                 
-                # Get probability scores for AUC
-                if hasattr(probe, 'predict_proba'):
-                    val_proba = probe.predict_proba(X_val)[:, 1]
+                # Calculate AUC if we have both classes
+                if len(np.unique(train_labels)) > 1 and len(np.unique(val_labels)) > 1:
+                    train_auc = roc_auc_score(train_labels, train_proba)
                     val_auc = roc_auc_score(val_labels, val_proba)
                 else:
-                    val_auc = val_acc
-                
-                all_head_scores.append({
-                    'layer': layer_idx,
-                    'head': head_idx,
-                    'accuracy': val_acc,
-                    'auc': val_auc,
-                    'probe': probe
-                })
-                probes.append(probe)
+                    train_auc = val_auc = 0.5
                 
             except Exception as e:
-                # Some heads might not converge
-                print(f"Warning: Head {layer_idx}-{head_idx} failed to train: {e}")
-                all_head_scores.append({
-                    'layer': layer_idx,
-                    'head': head_idx,
-                    'accuracy': 0.5,
-                    'auc': 0.5,
-                    'probe': None
-                })
-                probes.append(None)
+                print(f"Warning: Failed to train probe for layer {layer_idx}, head {head_idx}: {e}")
+                train_acc = val_acc = train_auc = val_auc = 0.5
+                probe = None
+            
+            head_info = {
+                'layer': layer_idx,
+                'head': head_idx,
+                'train_acc': train_acc,
+                'val_acc': val_acc,
+                'train_auc': train_auc,
+                'auc': val_auc,  # Use validation AUC for ranking
+                'probe': probe
+            }
+            
+            all_head_scores.append(head_info)
+            head_probes.append(probe)
     
-    return all_head_scores, probes
+    return all_head_scores, head_probes
 
 
 def select_top_heads(all_head_scores, top_k=48):
-    """Select top K heads based on AUC scores."""
+    """Select top K heads based on validation AUC."""
+    
+    # Filter out heads with failed probes
+    valid_heads = [h for h in all_head_scores if h['probe'] is not None]
     
     # Sort by AUC score
-    sorted_scores = sorted(all_head_scores, key=lambda x: x['auc'], reverse=True)
+    sorted_scores = sorted(valid_heads, key=lambda x: x['auc'], reverse=True)
     
     # Get top K heads
-    top_heads = sorted_scores[:top_k]
+    top_heads = sorted_scores[:min(top_k, len(sorted_scores))]
     
-    print(f"\nTop {top_k} heads for creativity detection:")
+    print(f"\nTop {len(top_heads)} heads for creativity detection:")
     print("="*60)
     
     # Group by layer for display
@@ -209,15 +230,15 @@ def select_top_heads(all_head_scores, top_k=48):
 
 def compute_intervention_directions(head_wise_acts, labels, top_heads, num_layers, num_heads):
     """
-    Compute intervention directions using center of mass method.
+    Compute intervention directions using center of mass method (best performing in ITI paper).
     
     Returns:
         directions: Dict mapping (layer, head) to (direction, std)
     """
     
-    print("\nComputing intervention directions...")
+    print("\nComputing intervention directions using mass mean shift...")
     
-    # Reshape activations
+    # Reshape activations to separate heads
     acts_reshaped = reshape_head_wise_activations(head_wise_acts, num_layers, num_heads)
     
     directions = {}
@@ -238,15 +259,30 @@ def compute_intervention_directions(head_wise_acts, labels, top_heads, num_layer
             creative_center = np.mean(creative_acts, axis=0)
             non_creative_center = np.mean(non_creative_acts, axis=0)
             
-            # Direction from non-creative to creative
+            # Direction from non-creative to creative (intervention direction)
             direction = creative_center - non_creative_center
-            direction = direction / (np.linalg.norm(direction) + 1e-8)
+            
+            # Normalize direction
+            norm = np.linalg.norm(direction)
+            if norm > 1e-8:
+                direction = direction / norm
+            else:
+                print(f"Warning: Near-zero direction for layer {layer_idx}, head {head_idx}")
+                direction = np.random.randn(len(direction))
+                direction = direction / np.linalg.norm(direction)
             
             # Compute standard deviation for scaling
             all_projections = head_acts @ direction.T
             std = np.std(all_projections)
             
             directions[(layer_idx, head_idx)] = (direction, std)
+        else:
+            print(f"Warning: Insufficient samples for layer {layer_idx}, head {head_idx}")
+            # Use random direction as fallback
+            dim = acts_reshaped.shape[-1]
+            direction = np.random.randn(dim)
+            direction = direction / np.linalg.norm(direction)
+            directions[(layer_idx, head_idx)] = (direction, 1.0)
     
     return directions
 
@@ -257,9 +293,10 @@ def visualize_results(layer_train_scores, layer_val_scores,
     
     Path(save_dir).mkdir(exist_ok=True)
     
-    # 1. Layer-wise probe performance
+    # Create figure with subplots
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
+    # 1. Layer-wise probe performance
     layers = list(range(len(layer_train_scores)))
     
     ax1.plot(layers, layer_train_scores, 'b-', label='Train', linewidth=2)
@@ -272,18 +309,21 @@ def visualize_results(layer_train_scores, layer_val_scores,
     ax1.grid(True, alpha=0.3)
     
     # 2. Head-wise probe performance heatmap
-    num_layers = max([h['layer'] for h in all_head_scores]) + 1
-    num_heads = max([h['head'] for h in all_head_scores]) + 1
-    
-    head_matrix = np.zeros((num_layers, num_heads))
-    for head in all_head_scores:
-        head_matrix[head['layer'], head['head']] = head['auc']
-    
-    im = ax2.imshow(head_matrix.T, aspect='auto', cmap='RdYlBu_r', vmin=0.5, vmax=1.0)
-    ax2.set_xlabel('Layer')
-    ax2.set_ylabel('Head')
-    ax2.set_title('Head-wise Creativity Detection (AUC)')
-    plt.colorbar(im, ax=ax2)
+    # Extract valid heads only
+    valid_heads = [h for h in all_head_scores if h['probe'] is not None]
+    if valid_heads:
+        num_layers = max([h['layer'] for h in valid_heads]) + 1
+        num_heads = max([h['head'] for h in valid_heads]) + 1
+        
+        head_matrix = np.full((num_layers, num_heads), 0.5)  # Initialize with 0.5 (random)
+        for head in valid_heads:
+            head_matrix[head['layer'], head['head']] = head['auc']
+        
+        im = ax2.imshow(head_matrix.T, aspect='auto', cmap='RdYlBu_r', vmin=0.5, vmax=1.0)
+        ax2.set_xlabel('Layer')
+        ax2.set_ylabel('Head')
+        ax2.set_title('Head-wise Creativity Detection (AUC)')
+        plt.colorbar(im, ax=ax2)
     
     plt.tight_layout()
     plt.savefig(f'{save_dir}/creativity_probe_performance.png', dpi=150)
@@ -330,11 +370,22 @@ def main():
     print("TRAINING CREATIVITY PROBES")
     print("="*60)
     
+    # Check if activation data exists
+    data_dir = Path('features/creativity_llama31_fixed')
+    if not data_dir.exists():
+        print(f"Error: Activation data not found in {data_dir}")
+        print("Please run get_creativity_activations.py first.")
+        return
+    
     # Load activations
     print("\nLoading activations...")
-    train_layer, train_head, train_labels, num_layers, num_heads = load_activations('train')
-    val_layer, val_head, val_labels, _, _ = load_activations('val')
-    test_layer, test_head, test_labels, _, _ = load_activations('test')
+    try:
+        train_layer, train_head, train_labels, num_layers, num_heads = load_activations('train')
+        val_layer, val_head, val_labels, _, _ = load_activations('val')
+        test_layer, test_head, test_labels, _, _ = load_activations('test')
+    except Exception as e:
+        print(f"Error loading activations: {e}")
+        return
     
     print(f"\nDataset statistics:")
     print(f"  Train: {len(train_labels)} samples ({np.sum(train_labels)} creative)")
@@ -376,7 +427,7 @@ def main():
     print("COMPUTING INTERVENTION DIRECTIONS")
     print("="*60)
     
-    # Combine train and validation for direction computation (following honest_llama)
+    # Combine train and validation for direction computation (following ITI paper)
     combined_head_acts = np.concatenate([train_head, val_head], axis=0)
     combined_labels = np.concatenate([train_labels, val_labels], axis=0)
     
@@ -426,7 +477,7 @@ def main():
     print("="*60)
     print(f"\nSummary:")
     print(f"  ✓ Trained probes for {num_layers} layers")
-    print(f"  ✓ Identified top {top_k} heads for creativity")
+    print(f"  ✓ Identified top {len(top_heads)} heads for creativity")
     print(f"  ✓ Computed intervention directions")
     print(f"  ✓ Test accuracy: {test_acc:.3f}")
     print(f"\nNext steps:")

@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -P personal-syedalir
+#PBS -P personal-gera0038
 #PBS -j oe
 #PBS -N interactive_job
 #PBS -l walltime=12:00:00
