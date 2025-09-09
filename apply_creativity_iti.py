@@ -11,20 +11,12 @@ import warnings
 warnings.filterwarnings('ignore')
 
 class CreativityITI:
-    """Inference-Time Intervention for enhancing creativity in code generation"""
     
-    def __init__(self, model_name="meta-llama/Meta-Llama-3.1-8B-Instruct", alpha=15.0):
-        """
-        Initialize ITI for creativity
-        
-        Args:
-            model_name: Model to use
-            alpha: Intervention strength (higher = more creative)
-        """
+    def __init__(self, model_name="meta-llama/Meta-Llama-3.1-8B-Instruct", alpha=1.0):
+
         self.model_name = model_name
         self.alpha = alpha
         
-        # Load model and tokenizer
         print(f"Loading model: {model_name}")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         if self.tokenizer.pad_token is None:
@@ -53,7 +45,6 @@ class CreativityITI:
         self.hooks = []
         
     def load_iti_components(self):
-        """Load saved directions and top heads"""
         
         component_dir = Path('creativity_iti_components')
         
@@ -67,7 +58,6 @@ class CreativityITI:
         
         print(f"Loaded {len(self.top_heads)} intervention heads")
         
-        # Group heads by layer for efficient intervention
         self.heads_by_layer = {}
         for head_info in self.top_heads:
             layer = head_info['layer']
@@ -80,22 +70,17 @@ class CreativityITI:
         """Create a hook function that intervenes on specific heads"""
         
         def hook_fn(module, input, output):
-            # Get the attention output
             if isinstance(output, tuple):
                 hidden_states = output[0]
             else:
                 hidden_states = output
             
-            # Only intervene on the last token (generation position)
-            # Shape: (batch_size, seq_len, hidden_size)
             batch_size, seq_len, _ = hidden_states.shape
             
-            # Reshape to separate heads
             hidden_reshaped = hidden_states.view(
                 batch_size, seq_len, self.num_heads, self.head_dim
             )
             
-            # Apply intervention to specified heads
             for head_idx in head_indices:
                 if (layer_idx, head_idx) in self.directions:
                     direction = self.directions[(layer_idx, head_idx)]
@@ -105,10 +90,8 @@ class CreativityITI:
                         device=hidden_reshaped.device
                     )
                     
-                    # Shift the last token's activation for this head
                     hidden_reshaped[:, -1, head_idx, :] += self.alpha * direction_tensor
             
-            # Reshape back
             hidden_states_new = hidden_reshaped.view(batch_size, seq_len, self.hidden_size)
             
             if isinstance(output, tuple):
@@ -132,22 +115,12 @@ class CreativityITI:
         print(f"Registered hooks on {len(self.heads_by_layer)} layers")
     
     def remove_hooks(self):
-        """Remove all intervention hooks"""
         for hook in self.hooks:
             hook.remove()
         self.hooks = []
     
     def generate_creative_solution(self, problem: str, max_length=512, temperature=0.8):
-        """
-        Generate a creative solution to the given problem
-        
-        Args:
-            problem: Problem description
-            max_length: Maximum generation length
-            temperature: Sampling temperature (higher = more random)
-        """
-        
-        # Format prompt
+
         prompt = f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
 
 You are a creative Python programmer. Generate innovative and elegant solutions to coding problems.
@@ -162,14 +135,11 @@ Here's a creative Python solution:
 
 ```python"""
         
-        # Tokenize
         inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True)
         inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         
-        # Register intervention hooks
         self.register_hooks()
         
-        # Generate with intervention
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
@@ -181,13 +151,10 @@ Here's a creative Python solution:
                 eos_token_id=self.tokenizer.eos_token_id
             )
         
-        # Remove hooks
         self.remove_hooks()
         
-        # Decode
         generated = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
         
-        # Extract just the code part
         if "```python" in generated:
             code_start = generated.find("```python") + len("```python")
             code_end = generated.find("```", code_start)
@@ -197,14 +164,11 @@ Here's a creative Python solution:
         return generated
     
     def compare_with_baseline(self, problem: str):
-        """Compare creative (with ITI) vs baseline (without ITI) solutions"""
-        
         print("=" * 60)
         print("BASELINE SOLUTION (No Intervention)")
         print("=" * 60)
         
-        # Generate without intervention
-        self.alpha = 0  # Temporarily disable
+        self.alpha = 0
         baseline = self.generate_creative_solution(problem, temperature=0.7)
         print(baseline)
         
@@ -212,7 +176,6 @@ Here's a creative Python solution:
         print(f"CREATIVE SOLUTION (ITI, α={self.original_alpha})")
         print("=" * 60)
         
-        # Generate with intervention
         self.alpha = self.original_alpha
         creative = self.generate_creative_solution(problem, temperature=0.8)
         print(creative)
@@ -242,7 +205,6 @@ def main():
     if args.problem:
         test_problems = [args.problem]
     
-    # Test each problem
     for i, problem in enumerate(test_problems, 1):
         print(f"\n{'#' * 60}")
         print(f"PROBLEM {i}: {problem}")
@@ -250,12 +212,10 @@ def main():
         
         baseline, creative = iti.compare_with_baseline(problem)
         
-        # Simple creativity metrics
         print("\n" + "=" * 60)
         print("CREATIVITY ANALYSIS")
         print("=" * 60)
         
-        # Count unique Python constructs
         baseline_constructs = set()
         creative_constructs = set()
         
