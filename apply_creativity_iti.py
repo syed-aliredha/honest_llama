@@ -1,4 +1,3 @@
-# apply_creativity_iti.py
 import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -31,28 +30,23 @@ class CreativityITI:
         )
         self.model.eval()
         
-        # Get model config
         self.config = self.model.config
         self.num_layers = self.config.num_hidden_layers
         self.num_heads = self.config.num_attention_heads
         self.hidden_size = self.config.hidden_size
         self.head_dim = self.hidden_size // self.num_heads
         
-        # Load ITI components
         self.load_iti_components()
         
-        # Setup hooks
         self.hooks = []
         
     def load_iti_components(self):
         
         component_dir = Path('creativity_iti_components')
         
-        # Load top heads
         with open(component_dir / 'top_heads.pkl', 'rb') as f:
             self.top_heads = pickle.load(f)
         
-        # Load directions
         with open(component_dir / 'directions.pkl', 'rb') as f:
             self.directions = pickle.load(f)
         
@@ -67,7 +61,6 @@ class CreativityITI:
             self.heads_by_layer[layer].append(head)
     
     def create_intervention_hook(self, layer_idx: int, head_indices: List[int]):
-        """Create a hook function that intervenes on specific heads"""
         
         def hook_fn(module, input, output):
             if isinstance(output, tuple):
@@ -102,12 +95,10 @@ class CreativityITI:
         return hook_fn
     
     def register_hooks(self):
-        """Register intervention hooks on the model"""
         
-        self.remove_hooks()  # Clean up any existing hooks
+        self.remove_hooks()
         
         for layer_idx, head_indices in self.heads_by_layer.items():
-            # Hook into the attention output
             hook_fn = self.create_intervention_hook(layer_idx, head_indices)
             hook = self.model.model.layers[layer_idx].self_attn.o_proj.register_forward_hook(hook_fn)
             self.hooks.append(hook)
@@ -190,11 +181,9 @@ def main():
                        help='Problem to solve (optional)')
     args = parser.parse_args()
     
-    # Initialize ITI
     iti = CreativityITI(alpha=args.alpha)
     iti.original_alpha = args.alpha
     
-    # Test problems
     test_problems = [
         "Write a function to find all unique pairs of numbers in a list that sum to a target value.",
         "Create a function that generates the Fibonacci sequence using an innovative approach.",

@@ -1,8 +1,3 @@
-# flexible_iti_test.py
-"""
-Flexible testing script with adjustable alpha and head selection
-"""
-
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from huggingface_hub import hf_hub_download

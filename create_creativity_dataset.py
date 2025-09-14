@@ -8,7 +8,6 @@ from sklearn.model_selection import train_test_split
 
 def analyze_creativity_data():
     df = pd.read_csv('Llama-8B-Instruct_dola3_creativity.csv')
-    
     print("=" * 60)
     print("DATASET ANALYSIS")
     print("=" * 60)

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 
-percentage=0.4
+percentage=0.3
 percentage_name='40%'
 
 def analyze_creativity_data():
